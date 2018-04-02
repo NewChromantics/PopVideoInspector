@@ -1,0 +1,3 @@
+[submodule "Assets/PopTimeline"]
+	path = Assets/PopTimeline
+	url = https://github.com/NewChromantics/PopTimeline.git
