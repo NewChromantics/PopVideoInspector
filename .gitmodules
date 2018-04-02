@@ -1,3 +1,6 @@
 [submodule "Assets/PopTimeline"]
 	path = Assets/PopTimeline
 	url = https://github.com/NewChromantics/PopTimeline.git
+[submodule "Assets/PopUnityCommon"]
+	path = Assets/PopUnityCommon
+	url = https://github.com/soylentgraham/PopUnityCommon.git
