@@ -6,14 +6,16 @@ using System.Text;
 using UnityEngine;
 
 
+//	nice reference; http://fabiensanglard.net/mobile_progressive_playback/index.php
 public class Mp4Parser
 {
+	//	use of long = file position
 	public struct TAtom
 	{
-		public const int HeaderSize = 8;
+		public const long HeaderSize = 8;
 		public string Fourcc;
-		public uint FileOffset;
-		public uint DataSize;
+		public long FileOffset;
+		public long DataSize;
 		public int lvl;
 
 		public void Set(byte[] Data8)
@@ -99,34 +101,67 @@ public class Mp4Parser
 		return null;
 	}
 
-	static void DecodeAtomMoov(System.Action<TAtom> EnumAtom, TAtom Moov,System.Func<uint,uint,byte[]> GetData)
+
+
+	static void DecodeAtomRecursive(System.Action<TAtom> EnumAtom, TAtom Moov,byte[] FileData)
 	{
-		uint AtomStart = Moov.FileOffset + TAtom.HeaderSize;
-		var MoovData = GetData(Moov.FileOffset, Moov.DataSize);
-		while( true )
+		var AtomStart = Moov.FileOffset + TAtom.HeaderSize;
+		while (true)
 		{
-			var NextAtom = GetNextAtom(MoovData, (int)AtomStart);
+			var NextAtom = GetNextAtom(FileData, (int)AtomStart,true);
 			if (NextAtom == null)
 				break;
 
 			var Atom = NextAtom.Value;
+
+			//	moov atom: The metadatas, containing codec description used in the mdata atom.
+			//	It also contains sub-atoms "stco" and "co64" which are absolute pointers to keyframes in the mdata atom.
 			EnumAtom(Atom);
+
+			DecodeAtomRecursive(EnumAtom, Atom, FileData);
+
 			AtomStart = Atom.FileOffset + Atom.DataSize;
 		}
 	}
-		
-	static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom, System.Func<uint,uint,byte[]> GetData)
+
+	static void DecodeAtomChildren(System.Action<TAtom> EnumAtom, TAtom Moov, byte[] FileData)
 	{
-		if ( Atom.Fourcc == "moov" )
+		//	decode moov children (mvhd, trak, udta)
+		var MoovEnd = Moov.FileOffset + Moov.DataSize;
+		for (var AtomStart=Moov.FileOffset+TAtom.HeaderSize; AtomStart <MoovEnd; AtomStart += 0)
 		{
-			DecodeAtomMoov(EnumAtom, Atom,GetData);
+			var NextAtom = GetNextAtom(FileData, AtomStart, false);
+			if (NextAtom == null)
+				break;
+			var Atom = NextAtom.Value;
+			Debug.Log("Found " + Atom.Fourcc);
+			try
+			{
+				EnumAtom(Atom);
+			}
+			catch(System.Exception e)
+			{}
+			AtomStart = Atom.FileOffset + Atom.DataSize;
 		}
 	}
 
-	static TAtom? GetNextAtom(byte[] Data,int Start)
+	static void DecodeAtomMoov(System.Action<TAtom> EnumAtom, TAtom Moov, byte[] FileData)
+	{
+		DecodeAtomChildren(EnumAtom, Moov, FileData);
+	}
+		
+	static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom,byte[] FileData)
+	{
+		if ( Atom.Fourcc == "moov" )
+		{
+			DecodeAtomMoov(EnumAtom, Atom,FileData);
+		}
+	}
+
+	static TAtom? GetNextAtom(byte[] Data,long Start,bool WalkOverData)
 	{
 		var AtomData = new byte[TAtom.HeaderSize];
-		for (int i = Start; i <Data.Length-TAtom.HeaderSize; i++)
+		for (var i = Start; i <Data.Length-TAtom.HeaderSize; i++)
 		{
 			//	let it throw(TM)
 			var Atom = new TAtom();
@@ -134,10 +169,14 @@ public class Mp4Parser
 				AtomData[ad] = Data[i + ad];
 			Atom.Set(AtomData);
 
-			//	if va
+			//	if valid fourcc
 			var lvl = GetLvl(Atom.Fourcc);
 			if (!lvl.HasValue)
+			{
+				if (!WalkOverData)
+					break;
 				continue;
+			}
 
 			Atom.FileOffset = (uint)i;
 			Atom.FileOffset = (uint)i;
@@ -150,21 +189,15 @@ public class Mp4Parser
 	//	parse as tree
 	public void ParseTree(string path, System.Action<TAtom> EnumAtom)
 	{
-		byte[] bytes = File.ReadAllBytes(path);
-		var Length = bytes.Length;
+		byte[] FileData = File.ReadAllBytes(path);
+		var Length = FileData.Length;
 
-		System.Func<uint,uint,byte[]> GetData = (Start,ChunkLength) =>
-		{
-			var Chunk = new byte[ChunkLength];
-			Array.Copy(bytes, Start, Chunk, 0, Chunk.Length);
-			return Chunk;
-		};
 
 		//	read first atom
-		int i = 0;
-		while ( i < bytes.Length )
+		long i = 0;
+		while ( i < FileData.Length )
 		{
-			var NextAtom = GetNextAtom(bytes, i);
+			var NextAtom = GetNextAtom(FileData, i,true);
 			if (NextAtom == null)
 				break;
 
@@ -173,7 +206,7 @@ public class Mp4Parser
 			{
 				EnumAtom(Atom);
 
-				DecodeAtom(EnumAtom,Atom,GetData);
+				DecodeAtom(EnumAtom,Atom,FileData);
 			}
 			catch(System.Exception e)
 			{
@@ -200,9 +233,9 @@ public class Mp4Parser
 		int Skipped = 0;
 		int Found = 0;
 
-		//	j just increases by one...
+
 		var AtomData = new byte[TAtom.HeaderSize];
-		for (uint i=0;	i<length-TAtom.HeaderSize;	i++)
+		for (long i=0;	i<length-TAtom.HeaderSize;	i++)
 		{
 			//	let it throw(TM)
 			var Atom = new TAtom();
