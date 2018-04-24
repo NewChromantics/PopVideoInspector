@@ -3,31 +3,36 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using UnityEngine;
+
 
 public class Mp4Parser
 {
-	public struct Header
+	public struct TAtom
 	{
-		public string Atom;
-		public uint Offset;
-		public uint Length;
+		public const int HeaderSize = 8;
+		public string Fourcc;
+		public uint FileOffset;
+		public uint DataSize;
 		public int lvl;
-	}
-	
-	public static string PrintHeader(string atomType, UInt32 size, UInt32 offset, int lvl)
-	{
-		string tab = "";
-		for (int i = 0; i < lvl; i++)
+
+		public void Set(byte[] Data8)
 		{
-			tab += "\t";
+			//Size = BitConverter.ToUInt32(new byte[] { Data8[0], Data8[1], Data8[2], Data8[3] }.Reverse().ToArray(), 0);
+			int sz = Data8[3] << 0;
+			sz += Data8[2] << 8;
+			sz += Data8[1] << 16;
+			sz += Data8[0] << 24;
+			DataSize = (uint)sz;
+
+			Fourcc = Encoding.ASCII.GetString(new byte[] { Data8[4], Data8[5], Data8[6], Data8[7] });
 		}
-		return tab + "[" + atomType + ", size: " + size + ", offset: " + offset + "]";
 	}
 
-	public static string[] getTypes()
+	public static string[] GetLvlStrings()
 	{
 		var types = new string[6];
-		types[0] = "ftyp,moov,mdat";
+		types[0] = "ftyp,moov,mdat"; 
 		types[1] = "mvhd,trak,udta";
 		types[2] = "tkhd,edts,mdia,meta,covr,©nam";
 		types[3] = "mdhd,hdlr,minf";
@@ -36,43 +41,185 @@ public class Mp4Parser
 		return types;
 	}
 
-	public void parserFunction(string path,System.Action<Header> EnumAtom)
+	static uint GetFourcc(string FourccString)
 	{
-		Console.WriteLine("Start");
-		var types = getTypes();
-		byte[] bytes = File.ReadAllBytes(path);
-		UInt32 length = Convert.ToUInt32(bytes.Length);
-		UInt32 offset = 0;
-		UInt32 j = 0;
+		var Bytes = Encoding.ASCII.GetBytes(FourccString);
+		return GetFourcc(Bytes[0], Bytes[1], Bytes[2], Bytes[3]);
+	}
 
-		while ((j + 8) < length)
+	static uint GetFourcc(byte a,byte b,byte c,byte d)
+	{
+		int sz = d << 0;
+		sz += c << 8;
+		sz += b << 16;
+		sz += a << 24;
+		return (uint)sz;
+	}
+
+
+	static string[] lvltypes = null;
+	public static string[] GetFourccs()
+	{
+		if (lvltypes == null)
+			lvltypes = GetLvlStrings();
+		return lvltypes;
+	}
+
+
+
+	static bool StringContain(string String, char[] Fourcc)
+	{
+		for (int f = 0; f < Fourcc.Length; f++)
 		{
+			if (Fourcc[f] != String[f])
+				return false;
+		}
+		return true;
+	}
+	
+	static bool StringsContain(string[] Strings,char[] Fourcc)
+	{
+		for (int i = 0; i < Strings.Length;	i++ )
+		{
+			if (StringContain(Strings[i], Fourcc))
+				return true;
+		}
+		return false;
+	}
+
+	static int? GetLvl(string AtomType)
+	{
+		var LvlTypes = GetLvlStrings();
+		for (int lvl = 0; lvl < LvlTypes.Count(); lvl++)
+		{
+			var lvlxtypes = LvlTypes[lvl];
+			if (lvlxtypes.Contains(AtomType))
+				return lvl;
+		}
+		return null;
+	}
+
+	static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom)
+	{
+		
+	}
+
+	static TAtom? GetNextAtom(byte[] Data,int Start)
+	{
+		var AtomData = new byte[TAtom.HeaderSize];
+		for (int i = Start; i <Data.Length-TAtom.HeaderSize; i++)
+		{
+			//	let it throw(TM)
+			var Atom = new TAtom();
+			for (int ad = 0; ad < AtomData.Count(); ad++)
+				AtomData[ad] = Data[i + ad];
+			Atom.Set(AtomData);
+
+			//	if va
+			var lvl = GetLvl(Atom.Fourcc);
+			if (!lvl.HasValue)
+				continue;
+
+			Atom.FileOffset = (uint)i;
+			Atom.FileOffset = (uint)i;
+			Atom.lvl = lvl.Value;
+			return Atom;
+		}
+		return null;
+	}
+
+	//	parse as tree
+	public void ParseTree(string path, System.Action<TAtom> EnumAtom)
+	{
+		byte[] bytes = File.ReadAllBytes(path);
+		var Length = bytes.Length;
+
+		//	read first atom
+		int i = 0;
+		while ( i < bytes.Length )
+		{
+			var NextAtom = GetNextAtom(bytes, i);
+			if (NextAtom == null)
+				break;
+
+			var Atom = NextAtom.Value;
 			try
 			{
-				UInt32 i = j;
-				UInt32 atomSize = BitConverter.ToUInt32(new byte[] { bytes[i], bytes[++i], bytes[++i], bytes[++i] }.Reverse().ToArray(), 0);
-				string atomType = Encoding.ASCII.GetString(new byte[] { bytes[++i], bytes[++i], bytes[++i], bytes[++i] });
-				for (int lvl = 0; lvl < 6; lvl++)
+				EnumAtom(Atom);
+
+				DecodeAtom(EnumAtom,Atom);
+			}
+			catch(System.Exception e)
+			{
+				Debug.LogException(e);
+			}
+
+			if (Atom.DataSize == 1)
+				throw new System.Exception("Extended Atom size found, not yet handled");
+			//i = (int)(Atom.Offset + Atom.Length + 1);
+			var NextPosition = Atom.FileOffset + Atom.DataSize;
+			if (i == NextPosition)
+				throw new System.Exception("Infinite loop averted");
+			i = (int)NextPosition;
+		}
+	}
+
+
+
+
+	public void parserFunction(string path,System.Action<TAtom> EnumAtom)
+	{
+		byte[] bytes = File.ReadAllBytes(path);
+		UInt32 length = Convert.ToUInt32(bytes.Length);
+		int Skipped = 0;
+		int Found = 0;
+
+		//	j just increases by one...
+		var AtomData = new byte[TAtom.HeaderSize];
+		for (uint i=0;	i<length-TAtom.HeaderSize;	i++)
+		{
+			//	let it throw(TM)
+			var Atom = new TAtom();
+			try
+			{
+				for (int ad=0;	ad<AtomData.Count();	ad++)
+					AtomData[ad]=bytes[i + ad];
+				Atom.Set(AtomData);
+
+
+				//	if va
+				var lvl = GetLvl(Atom.Fourcc);
+				if ( !lvl.HasValue )
 				{
-					if ((atomSize < length) && types[lvl].Contains(atomType))
-					{
-						var Header = new Header();
-						Header.Atom = atomType;
-						Header.Offset = offset;
-						Header.Length = length;
-						Header.lvl = lvl;
-						EnumAtom(Header);
-					}
+					//	invalid atom
+					//	missing lvl
+					Skipped++;
+					continue;
 				}
 
+				//	not always 8 aligned...
+				if ((i % TAtom.HeaderSize) != 0)
+					Debug.Log("i offset: " + (i % TAtom.HeaderSize));
+			
+				Found++;
+				if ( Atom.DataSize < length )
+				{
+					Atom.FileOffset = i;
+					Atom.lvl = lvl.Value;
+					EnumAtom(Atom);
+				}
+
+				//	dont re-read these bytes
+				i += TAtom.HeaderSize - 1;
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.ToString());
+				Debug.LogException(ex);
+				Debug.LogError("Tried to add "+Atom.Fourcc +" offset="+i);
 			}
-			j++;
-			offset++;
+
 		}
-		Console.WriteLine("Parsing is finished");
+
+		Debug.Log("Found=" + Found + " skipped=" + Skipped);
 	}
 }

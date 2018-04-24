@@ -11,19 +11,31 @@ public class VideoTimeline : MonoBehaviour {
 
 	public VideoClip Video;
 
-	[InspectorButton("ShowDataWindow")]
-	public bool		_ShowDataWindow;
+	[InspectorButton("ParseFile")]
+	public bool _ParseFile;
+	[InspectorButton("ParseFileTree")]
+	public bool _ParseFileTree;
 
 	VideoBridge Data;
 
-	public void ShowDataWindow()
+	public void Parse(bool AsTree)
 	{
 		Data = null;
 
 		var Filename = AssetDatabase.GetAssetPath(Video);
-		var Sink = new VideoBridge(Filename);
+		var Sink = new VideoBridge(Filename, AsTree);
 		var Window = EditorWindow.GetWindow<DataViewWindow>();
 		Window.SetBridge(Sink);
+	}
+
+	public void ParseFileTree()
+	{
+		Parse(true);
+	}
+
+	public void ParseFile()
+	{
+		Parse(false);
 	}
 }
 
@@ -220,21 +232,23 @@ public class VideoBridge : PopTimeline.DataBridge
 
 
 	//	maybe change this to direct IO?
-	public VideoBridge(string Filename)
+	public VideoBridge(string Filename,bool AsTree)
 	{
 		VideoStreams = new List<VideoStream>();
 		var Parser = new Mp4Parser();
 
-		System.Action<Mp4Parser.Header> EnumHeader = (Header) =>
+		System.Action<Mp4Parser.TAtom> EnumHeader = (Header) =>
 		{
 			var Packet = new VideoPacket();
-			Packet.StartTimeMs = (int)Header.Offset;
-			Packet.DurationMs = (int)Header.Length;
-			Debug.Log(Header.Atom);
-			PushPacket(Packet,Header.Atom);
+			Packet.StartTimeMs = (int)Header.FileOffset;
+			Packet.DurationMs = (int)Header.DataSize;
+			PushPacket(Packet,Header.Fourcc);
 		};
 
-		Parser.parserFunction(Filename,EnumHeader);
+		if ( AsTree )
+			Parser.ParseTree(Filename, EnumHeader);
+		else
+			Parser.parserFunction(Filename, EnumHeader);
 	}
 
 	/*
