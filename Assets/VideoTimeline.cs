@@ -242,6 +242,10 @@ public class VideoBridge : PopTimeline.DataBridge
 			Packet.StartTimeMs = (int)Header.FileOffset;
 			//	"time" overlaps here without -1
 			Packet.DurationMs = (int)Header.DataSize-1;
+
+			//Packet.StartTimeMs /= 512;
+			//Packet.DurationMs /= 512;
+
 			PushPacket(Packet,Header.Fourcc);
 		};
 
