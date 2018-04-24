@@ -230,7 +230,6 @@ public class VideoBridge : PopTimeline.DataBridge
 	}
 
 
-
 	//	maybe change this to direct IO?
 	public VideoBridge(string Filename,bool AsTree)
 	{

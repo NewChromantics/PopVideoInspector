@@ -99,9 +99,28 @@ public class Mp4Parser
 		return null;
 	}
 
-	static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom)
+	static void DecodeAtomMoov(System.Action<TAtom> EnumAtom, TAtom Moov,System.Func<uint,uint,byte[]> GetData)
 	{
+		uint AtomStart = Moov.FileOffset + TAtom.HeaderSize;
+		var MoovData = GetData(Moov.FileOffset, Moov.DataSize);
+		while( true )
+		{
+			var NextAtom = GetNextAtom(MoovData, (int)AtomStart);
+			if (NextAtom == null)
+				break;
+
+			var Atom = NextAtom.Value;
+			EnumAtom(Atom);
+			AtomStart = Atom.FileOffset + Atom.DataSize;
+		}
+	}
 		
+	static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom, System.Func<uint,uint,byte[]> GetData)
+	{
+		if ( Atom.Fourcc == "moov" )
+		{
+			DecodeAtomMoov(EnumAtom, Atom,GetData);
+		}
 	}
 
 	static TAtom? GetNextAtom(byte[] Data,int Start)
@@ -134,6 +153,13 @@ public class Mp4Parser
 		byte[] bytes = File.ReadAllBytes(path);
 		var Length = bytes.Length;
 
+		System.Func<uint,uint,byte[]> GetData = (Start,ChunkLength) =>
+		{
+			var Chunk = new byte[ChunkLength];
+			Array.Copy(bytes, Start, Chunk, 0, Chunk.Length);
+			return Chunk;
+		};
+
 		//	read first atom
 		int i = 0;
 		while ( i < bytes.Length )
@@ -147,7 +173,7 @@ public class Mp4Parser
 			{
 				EnumAtom(Atom);
 
-				DecodeAtom(EnumAtom,Atom);
+				DecodeAtom(EnumAtom,Atom,GetData);
 			}
 			catch(System.Exception e)
 			{
