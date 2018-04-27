@@ -5,7 +5,15 @@ using System.Linq;
 using System.Text;
 using UnityEngine;
 
-
+/*
+	todo: rename this. 
+	It's not limited to mp4. It's a collection of atoms, which are only known as atoms in some specs(mp4 mostly).
+	Everything else calls them "boxes"
+	This should be something more like PopIsoBaseMediaFormat
+	PopAtom has a better ring to it (we don't really want to call it PopBoxFormat)
+	Maybe PopMpeg is better, or even PopQuicktime, but that could be misleading (for jpeg2000 support etc)
+	https://en.wikipedia.org/wiki/ISO_base_media_file_format
+*/
 //	nice reference; http://fabiensanglard.net/mobile_progressive_playback/index.php
 public class Mp4Parser
 {
