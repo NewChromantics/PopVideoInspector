@@ -17,20 +17,34 @@ using UnityEngine;
 
 	For now it's a generic "atom" (fourcc+size) parser
 */
+
 //	nice reference; http://fabiensanglard.net/mobile_progressive_playback/index.php
 namespace PopX
 {
+	//	use of long = file position
+	public struct TAtom
+	{
+		public const long HeaderSize = 8;
+		public string Fourcc;
+		public long FileOffset;
+		public long DataSize;
+
+		public void Set(byte[] Data8)
+		{
+			//Size = BitConverter.ToUInt32(new byte[] { Data8[0], Data8[1], Data8[2], Data8[3] }.Reverse().ToArray(), 0);
+			int sz = Data8[3] << 0;
+			sz += Data8[2] << 8;
+			sz += Data8[1] << 16;
+			sz += Data8[0] << 24;
+			DataSize = (uint)sz;
+
+			Fourcc = Encoding.ASCII.GetString(new byte[] { Data8[4], Data8[5], Data8[6], Data8[7] });
+		}
+	}
+
+
 	public static class Atom
 	{
-		//	known mpeg4 atoms
-		/*
-			types[0] = "ftyp,moov,mdat";
-			types[1] = "mvhd,trak,udta";
-			types[2] = "tkhd,edts,mdia,meta,covr,©nam";
-			types[3] = "mdhd,hdlr,minf";
-			types[4] = "smhd,vmhd,dinf,stbl";
-			types[5] = "stsd,stts,stss,ctts,stsc,stsz,stco";
-		*/			
 		public static int Get24(byte a, byte b, byte c)
 		{
 			int sz = c << 0;
@@ -38,6 +52,7 @@ namespace PopX
 			sz += a << 16;
 			return sz;
 		}
+
 		public static int Get32(byte a, byte b, byte c, byte d)
 		{
 			int sz = d << 0;
@@ -46,31 +61,20 @@ namespace PopX
 			sz += a << 24;
 			return sz;
 		}
+
 		public static int Get64(byte a, byte b, byte c, byte d, byte e, byte f, byte g, byte h)
 		{
-			throw new System.Exception("todo");
+			int sz = h << 0;
+			sz += g << 8;
+			sz += f << 16;
+			sz += e << 24;
+			sz += d << 32;
+			sz += c << 40;
+			sz += b << 48;
+			sz += a << 56;
+			return sz;
 		}
 
-		//	use of long = file position
-		public struct TAtom
-		{
-			public const long HeaderSize = 8;
-			public string Fourcc;
-			public long FileOffset;
-			public long DataSize;
-		
-			public void Set(byte[] Data8)
-			{
-				//Size = BitConverter.ToUInt32(new byte[] { Data8[0], Data8[1], Data8[2], Data8[3] }.Reverse().ToArray(), 0);
-				int sz = Data8[3] << 0;
-				sz += Data8[2] << 8;
-				sz += Data8[1] << 16;
-				sz += Data8[0] << 24;
-				DataSize = (uint)sz;
-
-				Fourcc = Encoding.ASCII.GetString(new byte[] { Data8[4], Data8[5], Data8[6], Data8[7] });
-			}
-		}
 
 
 		static uint GetFourcc(string FourccString)
@@ -108,7 +112,7 @@ namespace PopX
 			}
 		}
 
-		static void DecodeAtomChildren(System.Action<TAtom> EnumAtom, TAtom Moov, byte[] FileData)
+		static public void DecodeAtomChildren(System.Action<TAtom> EnumAtom, TAtom Moov, byte[] FileData)
 		{
 			//	decode moov children (mvhd, trak, udta)
 			var MoovEnd = Moov.FileOffset + Moov.DataSize;
@@ -259,117 +263,6 @@ namespace PopX
 			return Sizes;
 		}
 
-		static void DecodeAtomTrack(System.Action<TAtom> EnumAtom, TAtom Trak, byte[] FileData, string TrackName)
-		{
-			TAtom? TrackChunkOffsets32Atom = null;
-			TAtom? TrackChunkOffsets64Atom = null;
-			TAtom? TrackSampleSizesAtom = null;
-			TAtom? TrackSampleToChunkAtom = null;
-
-
-			System.Action<TAtom> EnumStblAtom = (Atom) =>
-			{
-				//	http://mirror.informatimago.com/next/developer.apple.com/documentation/QuickTime/REF/Streaming.35.htm
-				if (Atom.Fourcc == "stco")
-					TrackChunkOffsets32Atom = Atom;
-				if (Atom.Fourcc == "co64")
-					TrackChunkOffsets64Atom = Atom;
-				if (Atom.Fourcc == "stsz")
-					TrackSampleSizesAtom = Atom;
-				if (Atom.Fourcc == "stsc")
-					TrackSampleToChunkAtom = Atom;
-			};
-			System.Action<TAtom> EnumMinfAtom = (Atom) =>
-			{
-				//EnumAtom(Atom);
-				if (Atom.Fourcc == "stbl")
-					DecodeAtomChildren(EnumStblAtom, Atom, FileData);
-			};
-			System.Action<TAtom> EnumMdiaAtom = (Atom) =>
-			{
-				//EnumAtom(Atom);
-				if (Atom.Fourcc == "minf")
-					DecodeAtomChildren(EnumMinfAtom, Atom, FileData);
-			};
-			System.Action<TAtom> EnumTrakChild = (Atom) =>
-			{
-				//EnumAtom(Atom);
-				if (Atom.Fourcc == "mdia")
-					DecodeAtomChildren(EnumMdiaAtom, Atom, FileData);
-			};
-
-			//	go through the track
-			DecodeAtomChildren(EnumTrakChild, Trak, FileData);
-
-			//	work out samples from atoms!
-			if (TrackSampleSizesAtom == null)
-				throw new System.Exception("Track missing sample sizes atom");
-			if (TrackChunkOffsets32Atom == null && TrackChunkOffsets64Atom == null)
-				throw new System.Exception("Track missing chunk offset atom");
-			if (TrackSampleToChunkAtom == null)
-				throw new System.Exception("Track missing sample-to-chunk table atom");
-
-			var SampleMetas = GetSampleMetas(TrackSampleToChunkAtom.Value, FileData);
-			var ChunkOffsets = GetChunkOffsets(TrackChunkOffsets32Atom, TrackChunkOffsets64Atom, FileData);
-			var SampleSizes = GetSampleSizes(TrackSampleSizesAtom.Value, FileData);
-
-			for (int i = 0; i < ChunkOffsets.Count(); i++)
-			{
-				var Chunk = new TAtom();
-				Chunk.FileOffset = ChunkOffsets[i];
-				Chunk.Fourcc = "Chunk_" + TrackName;
-				Chunk.DataSize = 1024;  //	count sizes in samples for this chunk
-				EnumAtom(Chunk);
-			}
-
-			int SampleIndex = 0;
-			for (int i = 0; i < SampleMetas.Count(); i++)
-			{
-				var SampleMeta = SampleMetas[i];
-				var ChunkIndex = SampleMeta.FirstChunk;
-				var ChunkOffset = ChunkOffsets[ChunkIndex];
-
-				for (int s = 0; s < SampleMeta.SamplesPerChunk; s++)
-				{
-					var Sample = new TAtom();
-					Sample.FileOffset = ChunkOffset;
-					Sample.Fourcc = "Sample_" + TrackName;
-					Sample.DataSize = SampleSizes[SampleIndex];
-					EnumAtom(Sample);
-
-					ChunkOffset += Sample.DataSize;
-					SampleIndex++;
-				}
-			}
-		}
-
-		static void DecodeAtomMoov(System.Action<TAtom> EnumAtom, TAtom Moov, byte[] FileData)
-		{
-			int TrackCounter = 0;
-			System.Action<TAtom> EnumMoovChildAtom = (Atom) =>
-			{
-				if (Atom.Fourcc == "trak")
-				{
-					Atom.Fourcc += "#" + TrackCounter;
-					EnumAtom(Atom);
-					DecodeAtomTrack(EnumAtom, Atom, FileData, "#" + TrackCounter);
-					TrackCounter++;
-				}
-				else
-				{
-					EnumAtom(Atom);
-				}
-			};
-			DecodeAtomChildren(EnumMoovChildAtom, Moov, FileData);
-		}
-
-		static void DecodeAtom(System.Action<TAtom> EnumAtom, TAtom Atom, byte[] FileData)
-		{
-			if (Atom.Fourcc == "moov")
-			{
-				DecodeAtomMoov(EnumAtom, Atom, FileData);
-			}
-		}
 
 		static TAtom? GetNextAtom(byte[] Data, long Start)
 		{
@@ -416,8 +309,6 @@ namespace PopX
 				try
 				{
 					EnumAtom(Atom);
-
-					DecodeAtom(EnumAtom, Atom, FileData);
 				}
 				catch (System.Exception e)
 				{

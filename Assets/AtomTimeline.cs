@@ -7,7 +7,7 @@ using UnityEditor;
 using PopX;
 
 
-public class VideoTimeline : MonoBehaviour {
+public class AtomTimeline : MonoBehaviour {
 
 	public VideoClip Video;
 
@@ -21,7 +21,7 @@ public class VideoTimeline : MonoBehaviour {
 		Data = null;
 
 		var Filename = AssetDatabase.GetAssetPath(Video);
-		var Sink = new VideoBridge(Filename);
+		var Sink = new AtomBridge(Filename);
 		var Window = EditorWindow.GetWindow<DataViewWindow>(this.name);
 		Window.SetBridge(Sink);
 	}
@@ -30,9 +30,9 @@ public class VideoTimeline : MonoBehaviour {
 
 
 
-public class VideoBridge : PopTimeline.DataBridge
+public class AtomBridge : PopTimeline.DataBridge
 {
-	public class VideoStream
+	public class AtomStream
 	{
 		public string StreamName;
 		public List<VideoPacket> _Packets;
@@ -45,7 +45,7 @@ public class VideoBridge : PopTimeline.DataBridge
 			}
 		}
 
-		public VideoStream()
+		public AtomStream()
 		{
 		}
 
@@ -178,7 +178,7 @@ public class VideoBridge : PopTimeline.DataBridge
 	};
 
 	//	parsed blocks, sorted by time
-	List<VideoStream> VideoStreams;
+	List<AtomStream> AtomStreams;
 
 	public override List<PopTimeline.DataStreamMeta> Streams { get { return GetStreamMetas(); } }
 
@@ -188,11 +188,8 @@ public class VideoBridge : PopTimeline.DataBridge
 
 	public struct VideoPacket : PopTimeline.StreamDataItem
 	{
-		public Mpeg4.TSample Sample;
-		//public int StartTimeMs;
-		//public int DurationMs;
-		public int StartTimeMs	{ get { return (int)Sample.DataPosition; }}
-		public int DurationMs { get { return (int)Sample.DataSize-1; } }
+		public int StartTimeMs;
+		public int DurationMs;
 
 		//	is this time before,inside,or after this block
 		public BinaryChop.CompareDirection GetTimeDirection(PopTimeline.TimeUnit Time)
@@ -223,30 +220,24 @@ public class VideoBridge : PopTimeline.DataBridge
 
 
 	//	maybe change this to direct IO?
-	public VideoBridge(string Filename)
+	public AtomBridge(string Filename)
 	{
-		VideoStreams = new List<VideoStream>();
+		AtomStreams = new List<AtomStream>();
 
-		int TrackCount = 0;
-		System.Action<PopX.Mpeg4.TTrack> EnumTrack = (Track) =>
+		System.Action<PopX.TAtom> EnumHeader = (Header) =>
 		{
-			var StreamName = "Track " + TrackCount;
-			TrackCount++;
+			var Packet = new VideoPacket();
+			Packet.StartTimeMs = (int)Header.FileOffset;
+			//	"time" overlaps here without -1
+			Packet.DurationMs = (int)Header.DataSize-1;
 
-			foreach ( var Sample in Track.Samples)
-			{
-				try
-				{
-					PushPacket(Sample, StreamName);
-				}
-				catch(System.Exception e)
-				{
-					Debug.LogException(e);
-				}
-			}
+			//Packet.StartTimeMs /= 512;
+			//Packet.DurationMs /= 512;
+
+			PushPacket(Packet,Header.Fourcc);
 		};
 
-		PopX.Mpeg4.Parse(Filename, EnumTrack);
+		PopX.Atom.Parse(Filename, EnumHeader);
 	}
 
 	/*
@@ -386,27 +377,25 @@ public class VideoBridge : PopTimeline.DataBridge
 	}
 
 
-	VideoStream GetStream(string StreamName)
+	AtomStream GetStream(string StreamName)
 	{
 		//	return existing...
-		Pop.AllocIfNull(ref VideoStreams);
-		foreach (var bs in VideoStreams)
+		Pop.AllocIfNull(ref AtomStreams);
+		foreach (var bs in AtomStreams)
 			if (bs.StreamName == StreamName)
 				return bs;
 
 		//	new!
-		var NewBlockStream = new VideoStream();
+		var NewBlockStream = new AtomStream();
 		NewBlockStream._Packets = new List<VideoPacket>();
 		NewBlockStream.StreamName = StreamName;
-		VideoStreams.Add(NewBlockStream);
-		return VideoStreams[VideoStreams.Count - 1];
+		AtomStreams.Add(NewBlockStream);
+		return AtomStreams[AtomStreams.Count - 1];
 	}
 
-	public void PushPacket(Mpeg4.TSample Sample,string StreamName)
+	public void PushPacket(VideoPacket Packet,string StreamName)
 	{
 		var Stream = GetStream(StreamName);
-		var Packet = new VideoPacket();
-		Packet.Sample = Sample;
 		Stream.AddBlock(Packet);
 	}
 
@@ -415,10 +404,10 @@ public class VideoBridge : PopTimeline.DataBridge
 	{
 		int? MinTime = null;
 		int? MaxTime = null;
-		Pop.AllocIfNull(ref VideoStreams);
+		Pop.AllocIfNull(ref AtomStreams);
 
 
-		foreach (var bs in VideoStreams)
+		foreach (var bs in AtomStreams)
 		{
 			var Blocks = bs.Blocks;
 			if (Blocks == null || Blocks.Count == 0)
@@ -456,9 +445,9 @@ public class VideoBridge : PopTimeline.DataBridge
 		};
 
 		var Metas = new List<PopTimeline.DataStreamMeta>();
-		for (int s = 0; s < VideoStreams.Count; s++)
+		for (int s = 0; s < AtomStreams.Count; s++)
 		{
-			var BlockStream = VideoStreams[s];
+			var BlockStream = AtomStreams[s];
 			var Meta = new VideoStreamMeta(BlockStream.StreamName, s);
 			Meta.Colour = StreamColours[s % StreamColours.Length];
 			Metas.Add(Meta);
@@ -469,7 +458,7 @@ public class VideoBridge : PopTimeline.DataBridge
 	public override List<PopTimeline.StreamDataItem> GetStreamData(PopTimeline.DataStreamMeta _StreamMeta, PopTimeline.TimeUnit MinTime, PopTimeline.TimeUnit MaxTime)
 	{
 		var StreamMeta = (VideoStreamMeta)_StreamMeta;
-		var BlockStream = VideoStreams[StreamMeta.StreamIndex];
+		var BlockStream = AtomStreams[StreamMeta.StreamIndex];
 		var Data = new List<PopTimeline.StreamDataItem>();
 		var Blocks = BlockStream.Blocks;
 
@@ -508,7 +497,7 @@ public class VideoBridge : PopTimeline.DataBridge
 	public override PopTimeline.StreamDataItem GetNearestOrPrevStreamData(PopTimeline.DataStreamMeta _StreamMeta, ref PopTimeline.TimeUnit Time)
 	{
 		var StreamMeta = (VideoStreamMeta)_StreamMeta;
-		var BlockStream = VideoStreams[StreamMeta.StreamIndex];
+		var BlockStream = AtomStreams[StreamMeta.StreamIndex];
 		var PrevData = BlockStream.GetNearestStreamDataLessThanEqual(Time);
 		var Prev = PrevData.Value;
 		Time = Prev.GetStartTime();
@@ -518,7 +507,7 @@ public class VideoBridge : PopTimeline.DataBridge
 	public override PopTimeline.StreamDataItem GetNearestOrNextStreamData(PopTimeline.DataStreamMeta _StreamMeta, ref PopTimeline.TimeUnit Time)
 	{
 		var StreamMeta = (VideoStreamMeta)_StreamMeta;
-		var BlockStream = VideoStreams[StreamMeta.StreamIndex];
+		var BlockStream = AtomStreams[StreamMeta.StreamIndex];
 		var NextData = BlockStream.GetNearestStreamDataGreaterThanEqual(Time);
 		var Next = NextData.Value;
 		Time = Next.GetStartTime();
