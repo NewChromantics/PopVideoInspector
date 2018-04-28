@@ -13,30 +13,19 @@ public class VideoTimeline : MonoBehaviour {
 
 	[InspectorButton("ParseFile")]
 	public bool _ParseFile;
-	[InspectorButton("ParseFileTree")]
-	public bool _ParseFileTree;
 
 	VideoBridge Data;
 
-	public void Parse(bool AsTree)
+	public void ParseFile()
 	{
 		Data = null;
 
 		var Filename = AssetDatabase.GetAssetPath(Video);
-		var Sink = new VideoBridge(Filename, AsTree);
+		var Sink = new VideoBridge(Filename);
 		var Window = EditorWindow.GetWindow<DataViewWindow>();
 		Window.SetBridge(Sink);
 	}
 
-	public void ParseFileTree()
-	{
-		Parse(true);
-	}
-
-	public void ParseFile()
-	{
-		Parse(false);
-	}
 }
 
 
@@ -231,12 +220,11 @@ public class VideoBridge : PopTimeline.DataBridge
 
 
 	//	maybe change this to direct IO?
-	public VideoBridge(string Filename,bool AsTree)
+	public VideoBridge(string Filename)
 	{
 		VideoStreams = new List<VideoStream>();
-		var Parser = new Mp4Parser();
 
-		System.Action<Mp4Parser.TAtom> EnumHeader = (Header) =>
+		System.Action<PopX.Atom.TAtom> EnumHeader = (Header) =>
 		{
 			var Packet = new VideoPacket();
 			Packet.StartTimeMs = (int)Header.FileOffset;
@@ -249,10 +237,7 @@ public class VideoBridge : PopTimeline.DataBridge
 			PushPacket(Packet,Header.Fourcc);
 		};
 
-		if ( AsTree )
-			Parser.ParseTree(Filename, EnumHeader);
-		else
-			Parser.parserFunction(Filename, EnumHeader);
+		PopX.Atom.Parse(Filename, EnumHeader);
 	}
 
 	/*
