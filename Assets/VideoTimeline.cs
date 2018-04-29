@@ -191,8 +191,8 @@ public class VideoBridge : PopTimeline.DataBridge
 		public Mpeg4.TSample Sample;
 		//public int StartTimeMs;
 		//public int DurationMs;
-		public int StartTimeMs	{ get { return (int)Sample.DataPosition; }}
-		public int DurationMs { get { return (int)Sample.DataSize-1; } }
+		public int StartTimeMs	{ get { return (int)(Sample.DataPosition); }}
+		public int DurationMs { get { return (int)(Sample.DataSize-1); } }
 
 		//	is this time before,inside,or after this block
 		public BinaryChop.CompareDirection GetTimeDirection(PopTimeline.TimeUnit Time)
@@ -230,20 +230,35 @@ public class VideoBridge : PopTimeline.DataBridge
 		int TrackCount = 0;
 		System.Action<PopX.Mpeg4.TTrack> EnumTrack = (Track) =>
 		{
-			var StreamName = "Track " + TrackCount;
+			var SampleStreamName = "Track " + TrackCount + " samples";
+			var ChunkStreamName = "Track " + TrackCount + " chunks";
 			TrackCount++;
 
 			foreach ( var Sample in Track.Samples)
 			{
 				try
 				{
-					PushPacket(Sample, StreamName);
+					PushPacket(Sample, SampleStreamName);
 				}
 				catch(System.Exception e)
 				{
 					Debug.LogException(e);
 				}
 			}
+
+			/*
+			foreach (var Sample in Track.Chunks)
+			{
+				try
+				{
+					PushPacket(Sample, ChunkStreamName);
+				}
+				catch (System.Exception e)
+				{
+					Debug.LogException(e);
+				}
+			}
+			*/
 		};
 
 		PopX.Mpeg4.Parse(Filename, EnumTrack);
