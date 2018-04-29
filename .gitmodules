@@ -4,3 +4,6 @@
 [submodule "Assets/PopUnityCommon"]
 	path = Assets/PopUnityCommon
 	url = https://github.com/soylentgraham/PopUnityCommon.git
+[submodule "Assets/PopCodecs"]
+	path = Assets/PopCodecs
+	url = https://github.com/NewChromantics/PopCodecs.git
