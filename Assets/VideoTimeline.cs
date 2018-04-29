@@ -7,6 +7,11 @@ using UnityEditor;
 using PopX;
 
 
+
+[System.Serializable]
+public class UnityEvent_H264HeaderAndChunk : UnityEngine.Events.UnityEvent<byte[],byte[]> { }
+
+
 public class VideoTimeline : MonoBehaviour {
 
 	public VideoClip Video;
@@ -14,26 +19,66 @@ public class VideoTimeline : MonoBehaviour {
 	[InspectorButton("ParseFile")]
 	public bool _ParseFile;
 
-	VideoBridge Data;
+	public string VideoStreamName = "avc1";
+	public UnityEvent_H264HeaderAndChunk OnH264Data;
+
+	VideoBridge Sink;
 
 	public void ParseFile()
 	{
-		Data = null;
-
 		var Filename = AssetDatabase.GetAssetPath(Video);
-		var Sink = new VideoBridge(Filename);
+		Sink = new VideoBridge(Filename);
 		var Window = EditorWindow.GetWindow<DataViewWindow>(this.name);
+		Window.OnTimeSelected.AddListener(OnTimeSelected);
 		Window.SetBridge(Sink);
 	}
 
+	void OnTimeSelected(PopTimeline.TimeUnit SelectedTime)
+	{
+		//	find keyframe closest to time
+		var VideoStream = Sink.GetVideoStream(VideoStreamName);
+
+		var Packet = VideoStream.GetNearestStreamDataLessThanEqual(SelectedTime);
+		//	todo: avoid infinite loop properly
+		var InfLoopCheck = 1000;
+		while ( Packet.HasValue && --InfLoopCheck>0)
+		{
+			if (Packet.Value.Sample.IsKeyframe)
+				break;
+
+			//	look for previous
+			var PrevTime = new PopTimeline.TimeUnit(Packet.Value.GetStartTime().Time - 1);
+			Packet = VideoStream.GetNearestStreamDataLessThanEqual(PrevTime);
+		}
+
+		if (InfLoopCheck <= 0)
+			Packet = null;
+
+		if (Packet == null)
+			throw new System.Exception("Failed to find keyframe before " + SelectedTime);
+
+		var HeaderData = VideoStream.TrackMeta.SampleDescriptions[0].Data;
+		var PacketData = Sink.GetFileData(Packet.Value.Sample.DataPosition, Packet.Value.Sample.DataSize);
+
+		//	just h264 current expects annexb format. Mp4 is probably in AVCC (see meta!)
+		HeaderData = PopX.H264.GetH264AnnexB(HeaderData);
+		PacketData = PopX.H264.GetH264AnnexB(PacketData);
+		OnH264Data.Invoke(HeaderData,PacketData);
+	}
 }
 
 
 
 public class VideoBridge : PopTimeline.DataBridge
 {
+	//	parsed blocks, sorted by time
+	List<VideoStream> VideoStreams;
+	byte[] FileData;
+
+
 	public class VideoStream
 	{
+		public Mpeg4.TTrack TrackMeta;
 		public string StreamName;
 		public List<VideoPacket> _Packets;
 
@@ -177,10 +222,14 @@ public class VideoBridge : PopTimeline.DataBridge
 		}
 	};
 
-	//	parsed blocks, sorted by time
-	List<VideoStream> VideoStreams;
 
 	public override List<PopTimeline.DataStreamMeta> Streams { get { return GetStreamMetas(); } }
+
+	public VideoStream GetVideoStream(string StreamName)
+	{
+		var StreamMeta = (VideoStreamMeta)GetStreamMeta(StreamName);
+		return VideoStreams[StreamMeta.StreamIndex];
+	}
 
 	public class EmptyLineException : System.Exception
 	{
@@ -216,7 +265,7 @@ public class VideoBridge : PopTimeline.DataBridge
 
 		public PopTimeline.DataState GetStatus()
 		{
-			return Sample.Keyframe ? PopTimeline.DataState.Loaded : PopTimeline.DataState.Exists;
+			return Sample.IsKeyframe ? PopTimeline.DataState.Loaded : PopTimeline.DataState.Exists;
 		}
 
 	}
@@ -225,13 +274,15 @@ public class VideoBridge : PopTimeline.DataBridge
 	//	maybe change this to direct IO?
 	public VideoBridge(string Filename)
 	{
+		FileData = System.IO.File.ReadAllBytes(Filename);
 		VideoStreams = new List<VideoStream>();
 
 		int TrackCount = 0;
-		System.Action<PopX.Mpeg4.TTrack> EnumTrack = (Track) =>
+		System.Action<Mpeg4.TTrack> EnumTrack = (Track) =>
 		{
-			var SampleStreamName = "Track " + TrackCount + " samples";
-			var ChunkStreamName = "Track " + TrackCount + " chunks";
+			var FirstSampleDescription = (Track.SampleDescriptions != null) && (Track.SampleDescriptions.Count > 0) ? Track.SampleDescriptions[0] : (Mpeg4.TTrackSampleDescription?)null;
+			var TrackCodec = (FirstSampleDescription!=null) ? FirstSampleDescription.Value.Fourcc : null;
+			var SampleStreamName = (TrackCodec!=null) ? TrackCodec : "Track " + TrackCount + " samples";
 			TrackCount++;
 
 			foreach ( var Sample in Track.Samples)
@@ -246,150 +297,18 @@ public class VideoBridge : PopTimeline.DataBridge
 				}
 			}
 
-			/*
-			foreach (var Sample in Track.Chunks)
-			{
-				try
-				{
-					PushPacket(Sample, ChunkStreamName);
-				}
-				catch (System.Exception e)
-				{
-					Debug.LogException(e);
-				}
-			}
-			*/
+			var Stream = GetVideoStream(SampleStreamName);
+			Stream.TrackMeta = Track;
 		};
 
-		PopX.Mpeg4.Parse(Filename, EnumTrack);
+		PopX.Mpeg4.Parse(FileData, EnumTrack);
 	}
 
-	/*
-	int? GetPrevEqualBlockStartLineIndex(int LineIndex)
+	public byte[] GetFileData(long Start,long Length)
 	{
-		var AllLines = DataLines;
-		for (int li = LineIndex; li >= 0; li--)
-		{
-			//	does this line start with a time code? if not, go back
-			var Line = AllLines[li];
-			if (Line.StartsWith(LineBlock.PacketTypePrefix))
-				return li;
-		}
-		return null;
-	}
-	int? GetNextEqualBlockStartLineIndex(int LineIndex)
-	{
-		var AllLines = DataLines;
-		for (int li = LineIndex; li < AllLines.Length; li++)
-		{
-			//	does this line start with a time code? if not, go back
-			var Line = AllLines[li];
-			if (Line.StartsWith(LineBlock.PacketTypePrefix))
-				return li;
-		}
-		return null;
+		return FileData.SubArray(Start, Length);
 	}
 
-
-	LineBlock? GetPrevEqualBlock(int LineIndex)
-	{
-		var AllLines = DataLines;
-
-		int Tries = 1000;
-		var Error = new System.Exception("Failed to GetPrevEqualBlock(" + LineIndex + ") after " + Tries + " tries");
-		//	loop so we skip over bad data
-		while (Tries-- > 0)
-		{
-			int? FirstLine = GetPrevEqualBlockStartLineIndex(LineIndex);
-			int? NextBlockFirstLine = GetNextEqualBlockStartLineIndex(LineIndex + 1);
-			if (!FirstLine.HasValue)
-				return null;
-			//	if no next block, we go to the end of the file
-			if (!NextBlockFirstLine.HasValue)
-				NextBlockFirstLine = AllLines.Length;
-			var LastLine = NextBlockFirstLine.Value - 1;
-
-			try
-			{
-				var Block = ParseBlock(FirstLine.Value, LastLine);
-				return Block;
-			}
-			catch (System.Exception e)
-			{
-				Debug.Log("Error parsing block " + FirstLine.Value + "..." + LastLine + "; " + e.Message);
-				LineIndex = FirstLine.Value - 1;
-			}
-		}
-		throw Error;
-	}
-
-	LineBlock? GetNextEqualBlock(int LineIndex)
-	{
-		var AllLines = DataLines;
-		int Tries = 1000;
-		var Error = new System.Exception("Failed to GetNextEqualBlock(" + LineIndex + ") after " + Tries + " tries");
-		//	loop so we skip over bad data
-		while (Tries-- > 0)
-		{
-			int? FirstLine = GetNextEqualBlockStartLineIndex(LineIndex);
-			//	if no first line we got to the end of the file
-			if (!FirstLine.HasValue)
-				return null;
-			int? NextBlockFirstLine = GetNextEqualBlockStartLineIndex(FirstLine.Value + 1);
-			//	if no next block, we go to the end of the file
-			if (!NextBlockFirstLine.HasValue)
-				NextBlockFirstLine = AllLines.Length;
-			var LastLine = NextBlockFirstLine.Value - 1;
-
-			try
-			{
-				var Block = ParseBlock(FirstLine.Value, LastLine);
-				return Block;
-			}
-			catch (System.Exception e)
-			{
-				Debug.Log("Error parsing block " + FirstLine.Value + "..." + LastLine + "; " + e.Message);
-				LineIndex = NextBlockFirstLine.Value + 0;
-			}
-		}
-		throw Error;
-	}
-
-	LineBlock ParseBlock(int FirstLineIndex, int LastLineIndex)
-	{
-		var AllLines = DataLines;
-
-		//	todo: find all json blocks properly
-		var JsonBlocks = new List<string>();
-		for (int i = FirstLineIndex; i <= LastLineIndex; i++)
-		{
-			var Line = AllLines[i];
-			if (IsAllWhitespace(Line))
-				continue;
-			JsonBlocks.Add(Line);
-		}
-
-		if (JsonBlocks.Count > 2)
-		{
-			throw new System.Exception("Unexpected json block count " + JsonBlocks.Count + " line " + FirstLineIndex + " ... " + LastLineIndex + "\n\n" + string.Join("\n", JsonBlocks.ToArray()));
-		}
-
-		//	first line should be timecode
-		var Timecode = TimecodeMarker.FromJson(JsonBlocks[0]);
-
-		var NewBlock = new LineBlock();
-		NewBlock.EndLine = LastLineIndex;
-		NewBlock.StartLine = FirstLineIndex;
-		NewBlock.Timecode = Timecode;
-		NewBlock.Json = JsonBlocks[1];  //	+ the others
-
-		//	cache
-		PushBlock(NewBlock);
-
-		return NewBlock;
-	}
-
-*/
 
 	public PopTimeline.DataStreamMeta GetStreamMeta(string Name)
 	{
