@@ -216,7 +216,7 @@ public class VideoBridge : PopTimeline.DataBridge
 
 		public PopTimeline.DataState GetStatus()
 		{
-			return PopTimeline.DataState.Loaded;
+			return Sample.Keyframe ? PopTimeline.DataState.Loaded : PopTimeline.DataState.Exists;
 		}
 
 	}

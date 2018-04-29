@@ -268,6 +268,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1698716008}
   - component: {fileID: 1698716007}
+  - component: {fileID: 1698716009}
   m_Layer: 0
   m_Name: GameObject
   m_TagString: Untagged
@@ -287,7 +288,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   Video: {fileID: 32900000, guid: b9b6d80c164c049da80eb68e12d663eb, type: 3}
-  _ShowDataWindow: 0
+  _ParseFile: 0
 --- !u!4 &1698716008
 Transform:
   m_ObjectHideFlags: 0
@@ -301,3 +302,16 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 2
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1698716009
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_PrefabParentObject: {fileID: 0}
+  m_PrefabInternal: {fileID: 0}
+  m_GameObject: {fileID: 1698716006}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c10409d07573346efaa2e6fb4e7b4d3c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Video: {fileID: 32900000, guid: b9b6d80c164c049da80eb68e12d663eb, type: 3}
+  _ParseFile: 0

@@ -33,16 +33,15 @@ namespace PopX
 		{
 			public long DataPosition;
 			public long DataSize;
+			public bool Keyframe;	//	
 		};
 		//	class to make it easier to pass around data
 		public class TTrack
 		{
-			public List<TSample> Chunks;
 			public List<TSample> Samples;
 
 			public TTrack()
 			{
-				this.Chunks = new List<TSample>();
 				this.Samples = new List<TSample>();
 			}
 		};
@@ -132,6 +131,53 @@ namespace PopX
 				Debug.LogWarning("Expected " + EntryCount + " chunks, got " + Offsets.Count());
 
 			return Offsets;
+		}
+
+		static bool[] GetSampleKeyframes(TAtom? SyncSamplesAtom, byte[] FileData,int SampleCount)
+		{
+			var Keyframes = new bool[SampleCount];
+			var Default = (SyncSamplesAtom == null) ? true : false;
+
+			for (var i = 0; i < Keyframes.Length;	i++ ) 
+				Keyframes[i] = Default;
+
+			if (SyncSamplesAtom == null)
+				return Keyframes;
+
+			//	read table and set keyframed
+			var Atom = SyncSamplesAtom.Value;
+			var AtomData = new byte[Atom.DataSize];
+			Array.Copy(FileData, Atom.FileOffset, AtomData, 0, AtomData.Length);
+
+			var Version = AtomData[8];
+			var Flags = Get24(AtomData[9], AtomData[10], AtomData[11]);
+			var EntryCount = Get32(AtomData[12], AtomData[13], AtomData[14], AtomData[15]);
+
+			//	each entry in the table is the size of a sample (and one chunk can have many samples)
+			var StartOffset = 16;
+			//	gr: docs don't say size, but this seems accurate...
+			var IndexSize = (AtomData.Length - StartOffset) / EntryCount;
+			for (int i = StartOffset; i < AtomData.Length; i += IndexSize)
+			{
+				int SampleIndex;
+				if (IndexSize == 3)
+				{
+					SampleIndex = Get24(AtomData[i + 0], AtomData[i + 1], AtomData[i + 2]);
+				}
+				else if (IndexSize == 4)
+				{
+					SampleIndex = Get32(AtomData[i + 0], AtomData[i + 1], AtomData[i + 2], AtomData[i + 3]);
+				}
+				else
+				{
+					throw new System.Exception("Unhandled index size " + IndexSize);
+				}
+				//	gr: indexes start at 1 again...
+				SampleIndex--;
+				Keyframes[SampleIndex] = true;
+			}
+
+			return Keyframes;
 		}
 
 		static List<long> GetSampleSizes(TAtom Atom, byte[] FileData)
@@ -252,7 +298,7 @@ namespace PopX
 				if (Atom.Fourcc == "trak")
 				{
 					var Track = new TTrack();
-					DecodeAtomTrack( ref Track, Atom, null, FileData );
+					DecodeAtom_Track( ref Track, Atom, null, FileData );
 					NewTracks.Add(Track);
 				}
 			};
@@ -260,31 +306,118 @@ namespace PopX
 			Tracks = NewTracks;
 		}
 
-		static void DecodeAtomTrack(ref TTrack Track,TAtom Trak,TAtom? MdatAtom,byte[] FileData)
-		{
-			TAtom? TrackChunkOffsets32Atom = null;
-			TAtom? TrackChunkOffsets64Atom = null;
-			TAtom? TrackSampleSizesAtom = null;
-			TAtom? TrackSampleToChunkAtom = null;
 
+		static List<TSample> DecodeAtom_SampleTable(TAtom StblAtom, TAtom? MdatAtom, byte[] FileData)
+		{
+			TAtom? ChunkOffsets32Atom = null;
+			TAtom? ChunkOffsets64Atom = null;
+			TAtom? SampleSizesAtom = null;
+			TAtom? SampleToChunkAtom = null;
+			TAtom? SyncSamplesAtom = null;
 
 			System.Action<TAtom> EnumStblAtom = (Atom) =>
 			{
 				//	http://mirror.informatimago.com/next/developer.apple.com/documentation/QuickTime/REF/Streaming.35.htm
 				if (Atom.Fourcc == "stco")
-					TrackChunkOffsets32Atom = Atom;
+					ChunkOffsets32Atom = Atom;
 				if (Atom.Fourcc == "co64")
-					TrackChunkOffsets64Atom = Atom;
+					ChunkOffsets64Atom = Atom;
 				if (Atom.Fourcc == "stsz")
-					TrackSampleSizesAtom = Atom;
+					SampleSizesAtom = Atom;
 				if (Atom.Fourcc == "stsc")
-					TrackSampleToChunkAtom = Atom;
+					SampleToChunkAtom = Atom;
+				if (Atom.Fourcc == "stss")
+					SyncSamplesAtom = Atom;
 			};
+		
+			PopX.Atom.DecodeAtomChildren(EnumStblAtom, StblAtom, FileData);
+
+			//	work out samples from atoms!
+			if (SampleSizesAtom == null)
+				throw new System.Exception("Track missing sample sizes atom");
+			if (ChunkOffsets32Atom == null && ChunkOffsets64Atom == null)
+				throw new System.Exception("Track missing chunk offset atom");
+			if (SampleToChunkAtom == null)
+				throw new System.Exception("Track missing sample-to-chunk table atom");
+
+			var PackedChunkMetas = GetChunkMetas(SampleToChunkAtom.Value, FileData);
+			var ChunkOffsets = GetChunkOffsets(ChunkOffsets32Atom, ChunkOffsets64Atom, FileData);
+			var SampleSizes = GetSampleSizes(SampleSizesAtom.Value, FileData);
+			var SampleKeyframes = GetSampleKeyframes(SyncSamplesAtom, FileData, SampleSizes.Count);
+
+			//	pad the metas to fit offset information
+			//	https://sites.google.com/site/james2013notes/home/mp4-file-format
+			var ChunkMetas = new List<ChunkMeta>();
+			//foreach ( var ChunkMeta in PackedChunkMetas )
+			for (var i = 0; i < PackedChunkMetas.Count; i++)
+			{
+				var ChunkMeta = PackedChunkMetas[i];
+				//	first begins at 1. despite being an index...
+				var FirstChunk = ChunkMeta.FirstChunk - 1;
+				//	pad previous up to here
+				while (ChunkMetas.Count < FirstChunk)
+					ChunkMetas.Add(ChunkMetas[ChunkMetas.Count - 1]);
+
+				ChunkMetas.Add(ChunkMeta);
+			}
+			//	and pad the end
+			while (ChunkMetas.Count < ChunkOffsets.Count)
+				ChunkMetas.Add(ChunkMetas[ChunkMetas.Count - 1]);
+
+			//	superfolous data
+			var Chunks = new List<TSample>();
+			long? MdatEnd = (MdatAtom.HasValue) ? (MdatAtom.Value.FileOffset + MdatAtom.Value.DataSize) : (long?)null;
+			for (int i = 0; i < ChunkOffsets.Count; i++)
+			{
+				var ThisChunkOffset = ChunkOffsets[i];
+				//	chunks are serial, so length is up to next
+				//	gr: mdatend might need to be +1
+				long? NextChunkOffset = (i >= ChunkOffsets.Count - 1) ? MdatEnd : ChunkOffsets[i + 1];
+				long ChunkLength = (NextChunkOffset.HasValue) ? (NextChunkOffset.Value - ThisChunkOffset) : 0;
+
+				var Chunk = new TSample();
+				Chunk.DataPosition = ThisChunkOffset;
+				Chunk.DataSize = ChunkLength;
+				Chunks.Add(Chunk);
+			}
+
+			var Samples = new List<TSample>();
+
+			int SampleIndex = 0;
+			for (int i = 0; i < ChunkMetas.Count(); i++)
+			{
+				var SampleMeta = ChunkMetas[i];
+				var ChunkIndex = i;
+				var ChunkOffset = ChunkOffsets[ChunkIndex];
+
+				for (int s = 0; s < SampleMeta.SamplesPerChunk; s++)
+				{
+					var Sample = new TSample();
+					Sample.DataPosition = ChunkOffset;
+					Sample.DataSize = SampleSizes[SampleIndex];
+					Sample.Keyframe = SampleKeyframes[SampleIndex];
+					Samples.Add(Sample);
+
+					ChunkOffset += Sample.DataSize;
+					SampleIndex++;
+				}
+			}
+
+			if (SampleIndex != SampleSizes.Count)
+				Debug.LogWarning("Enumerated " + SampleIndex + " samples, expected " + SampleSizes.Count);
+
+			return Samples;
+		}
+
+		static void DecodeAtom_Track(ref TTrack Track,TAtom Trak,TAtom? MdatAtom,byte[] FileData)
+		{
+			List<TSample> TrackSamples = null;
+
 			System.Action<TAtom> EnumMinfAtom = (Atom) =>
 			{
 				//EnumAtom(Atom);
 				if (Atom.Fourcc == "stbl")
-					PopX.Atom.DecodeAtomChildren(EnumStblAtom, Atom, FileData);
+					TrackSamples = DecodeAtom_SampleTable(Atom, MdatAtom, FileData);
 			};
 			System.Action<TAtom> EnumMdiaAtom = (Atom) =>
 			{
@@ -302,75 +435,7 @@ namespace PopX
 			//	go through the track
 			PopX.Atom.DecodeAtomChildren(EnumTrakChild, Trak, FileData);
 
-			//	work out samples from atoms!
-			if (TrackSampleSizesAtom == null)
-				throw new System.Exception("Track missing sample sizes atom");
-			if (TrackChunkOffsets32Atom == null && TrackChunkOffsets64Atom == null)
-				throw new System.Exception("Track missing chunk offset atom");
-			if (TrackSampleToChunkAtom == null)
-				throw new System.Exception("Track missing sample-to-chunk table atom");
-
-			var PackedChunkMetas = GetChunkMetas(TrackSampleToChunkAtom.Value, FileData);
-			var ChunkOffsets = GetChunkOffsets(TrackChunkOffsets32Atom, TrackChunkOffsets64Atom, FileData);
-			var SampleSizes = GetSampleSizes(TrackSampleSizesAtom.Value, FileData);
-
-			//	pad the metas to fit offset information
-			//	https://sites.google.com/site/james2013notes/home/mp4-file-format
-			var ChunkMetas = new List<ChunkMeta>();
-			//foreach ( var ChunkMeta in PackedChunkMetas )
-			for (var i = 0; i < PackedChunkMetas.Count;	i++ )
-			{
-				var ChunkMeta = PackedChunkMetas[i];
-				//	first begins at 1. despite being an index...
-				var FirstChunk = ChunkMeta.FirstChunk - 1;
-				//	pad previous up to here
-				while (ChunkMetas.Count < FirstChunk)
-					ChunkMetas.Add(ChunkMetas[ChunkMetas.Count - 1]);
-
-				ChunkMetas.Add(ChunkMeta);
-			}
-			//	and pad the end
-			while (ChunkMetas.Count < ChunkOffsets.Count)
-				ChunkMetas.Add(ChunkMetas[ChunkMetas.Count - 1]);
-		
-			long? MdatEnd = (MdatAtom.HasValue) ? (MdatAtom.Value.FileOffset + MdatAtom.Value.DataSize) : (long?)null;
-			for (int i = 0; i < ChunkOffsets.Count; i++)
-			{
-				var ThisChunkOffset = ChunkOffsets[i];
-				//	chunks are serial, so length is up to next
-				//	gr: mdatend might need to be +1
-				long? NextChunkOffset = (i >= ChunkOffsets.Count - 1) ? MdatEnd : ChunkOffsets[i + 1];
-				long ChunkLength = (NextChunkOffset.HasValue) ? (NextChunkOffset.Value - ThisChunkOffset) : 0;
-
-				var Chunk = new TSample();
-				Chunk.DataPosition = ThisChunkOffset;
-				Chunk.DataSize = ChunkLength;
-				Track.Chunks.Add(Chunk);
-			}
-
-
-			int SampleIndex = 0;
-			for (int i = 0; i < ChunkMetas.Count(); i++)
-			{
-				var SampleMeta = ChunkMetas[i];
-				var ChunkIndex = i;
-				var ChunkOffset = ChunkOffsets[ChunkIndex];
-
-				for (int s = 0; s < SampleMeta.SamplesPerChunk; s++)
-				{
-					var Sample = new TSample();
-					Sample.DataPosition = ChunkOffset;
-					Sample.DataSize = SampleSizes[SampleIndex];
-					Track.Samples.Add(Sample);
-
-					ChunkOffset += Sample.DataSize;
-					SampleIndex++;
-				}
-			}
-
-			if (SampleIndex != SampleSizes.Count)
-				Debug.LogWarning("Enumerated " + SampleIndex + " samples, expected " + SampleSizes.Count);
-
+			Track.Samples = TrackSamples;
 		}
 
 	}
