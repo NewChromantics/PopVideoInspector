@@ -189,10 +189,10 @@ public class VideoBridge : PopTimeline.DataBridge
 	public struct VideoPacket : PopTimeline.StreamDataItem
 	{
 		public Mpeg4.TSample Sample;
-		//public int StartTimeMs;
-		//public int DurationMs;
-		public int StartTimeMs	{ get { return (int)(Sample.DataPosition); }}
-		public int DurationMs { get { return (int)(Sample.DataSize-1); } }
+		//public int StartTimeMs	{ get { return (int)(Sample.DataPosition); }}
+		//public int DurationMs { get { return (int)(Sample.DataSize-1); } }
+		public int StartTimeMs	{ get { return (int)(Sample.DecodeTime); }}
+		public int DurationMs { get { return (int)(Sample.DecodeDuration-1); } }
 
 		//	is this time before,inside,or after this block
 		public BinaryChop.CompareDirection GetTimeDirection(PopTimeline.TimeUnit Time)
